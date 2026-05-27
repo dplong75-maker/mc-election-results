@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GE2026 DEMO — Montgomery County</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" media="print" onload="this.media='all'">
 <style>
 :root{
   --bg:#f0f4f6;--surface:#ffffff;--surface2:#e8f4f2;--border:#c8dfe8;
@@ -78,6 +79,11 @@ tr:hover td{background:var(--surface2);color:var(--primary)}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:var(--surface2)}
 ::-webkit-scrollbar-thumb{background:var(--accent);border-radius:3px}::-webkit-scrollbar-thumb:hover{background:var(--primary)}
 @media(max-width:700px){.kpi-strip{grid-template-columns:1fr}.grid{grid-template-columns:1fr;padding:12px}.panel.wide{grid-column:1}}
+#map{height:500px;width:100%}
+.map-legend{padding:8px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;border-top:1px solid var(--border);background:var(--surface)}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--dim)}
+.legend-swatch{width:14px;height:14px;border-radius:2px;flex-shrink:0}
+.leaflet-tooltip{font-family:'Montserrat',sans-serif;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:6px 10px}
 </style>
 </head>
 <body>
@@ -116,6 +122,22 @@ tr:hover td{background:var(--surface2);color:var(--primary)}
       </div>
       <div class="bar-list" id="race-chart" style="max-height:none;padding:16px 24px;">
         <div style="text-align:center;padding:32px;color:var(--muted);font-size:12px;">Loading...</div>
+      </div>
+    </div>
+    <div class="panel wide">
+      <div class="ph" style="gap:16px;flex-wrap:wrap;">
+        <span class="ph-title">Precinct Map</span>
+        <span id="map-contest-label" style="color:var(--accent);font-size:13px;font-weight:600;flex:1;">Select a Contest to color by winner</span>
+        <span id="map-bt-label" style="color:var(--white);font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;white-space:nowrap;"></span>
+      </div>
+      <div id="map"></div>
+      <div class="map-legend">
+        <span class="legend-item"><span class="legend-swatch" style="background:#083A90"></span>Democratic</span>
+        <span class="legend-item"><span class="legend-swatch" style="background:#E81B23"></span>Republican</span>
+        <span class="legend-item"><span class="legend-swatch" style="background:#888"></span>Other</span>
+        <span class="legend-item"><span class="legend-swatch" style="background:#ccc;border:1px solid #aaa"></span>No Data</span>
+        <span style="flex:1"></span>
+        <span style="font-size:10px;color:var(--muted);">Click a precinct to filter &nbsp;|&nbsp; Scroll to zoom</span>
       </div>
     </div>
     <div class="panel wide">
@@ -171,6 +193,7 @@ function init(){
     renderRaceChart(DEFAULT_CONTEST,'');
     document.getElementById('loading').style.display='none';
     document.getElementById('app').style.display='block';
+    setTimeout(loadMap, 100);
   }catch(e){
     document.getElementById('loading').innerHTML='<div style="color:#fff;font-family:monospace;padding:24px;text-align:center;font-size:13px;max-width:600px;">Error: '+e.message+'</div>';
   }
@@ -276,6 +299,7 @@ function resetFilters(){
 function render(bt){
   renderKPIs(bt); renderCharts(bt); renderTable();
   renderRaceChart(document.getElementById('f-contest').value, bt);
+  drawMap();
 }
 
 function renderKPIs(bt){
@@ -395,6 +419,125 @@ function renderTable(){
     return'<tr><td>'+(r[F.p]||'&#8212;')+'</td><td title="'+(r[F.ct]||'')+'">'+ct+'</td><td>'+(r[F.cn]||'&#8212;')+'</td><td>'+r[F.rv].toLocaleString()+'</td><td>'+(r[F.to]*100).toFixed(1)+'%</td><td>'+r[F.tb].toLocaleString()+'</td><td>'+r[F.tv].toLocaleString()+'</td><td>'+r[F.edv].toLocaleString()+'</td><td>'+r[F.miv].toLocaleString()+'</td><td>'+r[F.prv].toLocaleString()+'</td></tr>';
   }).join('');
 }
+
+// ── MAP ──────────────────────────────────────────────────────────
+const GEOJSON_URL='https://gis.montcopa.org/arcgis/rest/services/Voters/Montgomery_County_Voting_Districts/FeatureServer/1/query?outFields=*&where=1%3D1&f=geojson';
+let map=null, geojsonLayer=null, geojsonData=null, precinctWinners={};
+
+function loadMap(){
+  const s=document.createElement('script');
+  s.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+  s.onload=()=>{
+    map=L.map('map').setView([40.18,-75.37],11);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
+      attribution:'&copy; CARTO',maxZoom:19
+    }).addTo(map);
+    fetch(GEOJSON_URL)
+      .then(r=>{if(!r.ok) throw new Error('HTTP '+r.status);return r.json();})
+      .then(data=>{
+        geojsonData=data;
+        console.log('GeoJSON loaded:',data.features.length,'features');
+        console.log('Fields:',Object.keys(data.features[0].properties));
+        drawMap();
+      })
+      .catch(e=>{
+        console.error('GeoJSON error:',e);
+        document.getElementById('map-contest-label').innerHTML='<span style="color:#E81B23;">&#9888; Could not load map: '+e.message+'</span>';
+      });
+  };
+  s.onerror=()=>{
+    document.getElementById('map-contest-label').innerHTML='<span style="color:#E81B23;">&#9888; Could not load Leaflet library</span>';
+  };
+  document.head.appendChild(s);
+}
+
+function getPctName(props){
+  return props['Precinct_name']||props['PRECINCT_NAME']||props['PrecinctName']||props['precinct_name']||props['NAME']||'';
+}
+
+function buildWinners(contestTitle,bt){
+  precinctWinners={};
+  if(!contestTitle) return;
+  const btF=bt==='ed'?F.edv:bt==='mi'?F.miv:bt==='pr'?F.prv:F.tv;
+  const pctCand={};
+  for(const r of ALL){
+    if(r[F.ct]!==contestTitle) continue;
+    const p=r[F.p];
+    if(!pctCand[p]) pctCand[p]={};
+    if(!pctCand[p][r[F.cn]]) pctCand[p][r[F.cn]]={votes:0,party:r[F.pc]};
+    pctCand[p][r[F.cn]].votes+=r[btF];
+  }
+  for(const p of Object.keys(pctCand)){
+    const cands=Object.entries(pctCand[p]).sort((a,b)=>b[1].votes-a[1].votes);
+    const [wName,wData]=cands[0];
+    const ps=PCT_SUMMARY[p];
+    const rv=ps?ps[PS.rv]:0;
+    const tb=ps?(bt==='ed'?ps[PS.edb]:bt==='mi'?ps[PS.mib]:bt==='pr'?ps[PS.prb]:ps[PS.tb]):0;
+    precinctWinners[p]={winner:wName,party:wData.party,votes:wData.votes,turnout:rv>0?tb/rv:0};
+  }
+}
+
+function pctBelongsToMuni(pName,mv){
+  const r=ALL.find(r=>r[F.p]===pName);
+  return r?r[F.muni]===mv:false;
+}
+
+function drawMap(){
+  if(!geojsonData||!map||typeof L==='undefined') return;
+  const ct=document.getElementById('f-contest').value;
+  const bt=document.getElementById('f-bt').value;
+  const mv=document.getElementById('f-muni').value;
+  const pv=document.getElementById('f-pct').value;
+
+  document.getElementById('map-contest-label').textContent=ct||'Select a Contest to color by winner';
+  document.getElementById('map-bt-label').textContent=ct?(bt==='ed'?'Election Day':bt==='mi'?'Mail-In':bt==='pr'?'Provisional':'Total Votes'):'';
+
+  buildWinners(ct,bt);
+  if(geojsonLayer){geojsonLayer.remove();geojsonLayer=null;}
+
+  geojsonLayer=L.geoJSON(geojsonData,{
+    style(feature){
+      const pName=getPctName(feature.properties);
+      const w=precinctWinners[pName];
+      const highlighted=pv?pName===pv:mv?pctBelongsToMuni(pName,mv):true;
+      const color=w?(w.party==='DEM'?'#083A90':w.party==='REP'?'#E81B23':'#888'):'#cccccc';
+      return{fillColor:color,fillOpacity:highlighted?0.75:0.15,color:highlighted?'#03425c':'#aaa',weight:highlighted?1.5:0.5};
+    },
+    onEachFeature(feature,layer){
+      const pName=getPctName(feature.properties);
+      const w=precinctWinners[pName];
+      const tip=w?'<b>'+w.winner+'</b> ('+w.party+')<br>'+w.votes.toLocaleString()+' votes &middot; '+(w.turnout*100).toFixed(1)+'% turnout':'No data';
+      layer.bindTooltip('<div style="min-width:150px"><b style="font-size:12px">'+pName+'</b><br><span style="color:#6a9aaa;font-size:10px">'+(ct||'No contest selected')+'</span><br>'+tip+'</div>',{sticky:true});
+      layer.on('click',()=>{
+        const rows=ALL.filter(r=>r[F.p]===pName);
+        if(!rows.length) return;
+        const muni=rows[0][F.muni];
+        const fMuni=document.getElementById('f-muni');
+        const fPct=document.getElementById('f-pct');
+        if(fMuni.value!==muni){
+          fMuni.value=muni;
+          const fp=[...new Set(ALL.filter(r=>r[F.muni]===muni).map(r=>r[F.p]))].sort();
+          fPct.innerHTML='<option value="">All Precincts</option>';
+          fp.forEach(p=>{const o=document.createElement('option');o.value=p;o.textContent=p;fPct.appendChild(o);});
+        }
+        fPct.value=pName;
+        fPct.dispatchEvent(new Event('change'));
+      });
+    }
+  }).addTo(map);
+
+  if(pv||mv){
+    const matched=[];
+    geojsonLayer.eachLayer(l=>{
+      const pName=getPctName(l.feature.properties);
+      if(pv?pName===pv:pctBelongsToMuni(pName,mv)) matched.push(l);
+    });
+    if(matched.length) map.fitBounds(L.featureGroup(matched).getBounds().pad(0.2));
+  } else {
+    map.setView([40.18,-75.37],11);
+  }
+}
+// ── END MAP ───────────────────────────────────────────────────────
 
 window.onload=init;
 </script>
